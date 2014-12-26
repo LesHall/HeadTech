@@ -19,7 +19,8 @@ Capture cam;
 Detector bd;
 
 
-float mouseRate = 3.0;
+float responseTime = 2.0;
+float mouseRate = 8.0;
 PVector blob = new PVector(0, 0, 0);
 PVector blobAvg = new PVector(0, 0, 0);
 PVector gyro = new PVector(0, 0, 0);
@@ -30,14 +31,18 @@ int numButtons = 9;
 boolean[] button = new boolean[9];
 PVector mousePos = new PVector(0, 0, 0);
 PImage img;
-int purpleClicks = 0;
+float avgx = 0;
+float avgy = 0;
+float prevx = 0;
+float prevy = 0;
+float q = 8;  // size of window
 
 
 void setup()
 {
-  size(640, 360);
-  frameRate(5);
-  
+  size(256, 256);
+  //frameRate(15);
+    
   /* start oscP5, listening for incoming messages */
   oscP5 = new OscP5(this, 11000);
   myRemoteLocation = new NetAddress("127.0.0.1", 11000);
@@ -57,7 +62,8 @@ void setup()
   if (cameras == null)
   {
     println("Failed to retrieve the list of available cameras, will try the default...");
-    cam = new Capture(this, width, height);
+    exit();
+    //cam = new Capture(this, width, height);
   }
   if (cameras.length == 0)
   {
@@ -74,7 +80,7 @@ void setup()
 
     // The camera can be initialized directly using an element
     // from the array returned by list():
-    cam = new Capture(this, cameras[4]);
+    cam = new Capture(this, cameras[3]);
     // Or, the settings can be defined based on the text in the list
     //cam = new Capture(this, 640, 480, "Built-in iSight", 30);
     
@@ -84,7 +90,7 @@ void setup()
   
   img = new PImage(width, height);  
 
-  bd = new Detector(this, 255);
+  bd = new Detector(this);
 }
 
 
@@ -95,100 +101,76 @@ void draw()
   // get a camera image
   if (cam.available() == true)
   {
-    img = cam;
     cam.read();
-    cam.filter(GRAY);
-    cam.filter(BLUR, 2);
-    cam.filter(POSTERIZE, 8);
-    cam.filter(BLUR, 2);
-    cam.filter(POSTERIZE, 8);
-    cam.filter(BLUR, 2);
-    cam.filter(THRESHOLD, 0.5);
+    img.copy(cam, 
+      cam.width/2-width/2, cam.height/2-height/2, width, height, 
+      0, 0, width, height);
+    img.filter(THRESHOLD, 0.5);
+
 
     pushMatrix();
       scale(-1.0, 1.0);
-      image(cam, -cam.width, 0);
+      image(img, -img.width, 0);
     popMatrix();
     
-    loadPixels();
+    img.loadPixels();
     
-    // blob scan
-    bd.findBlobs(pixels, width, height);
-    //To be called before quering
-    //the library.
-    bd.loadBlobsFeatures();
-    //Computes the blob center of mass. 
-    //Replaces findCentroids(boolean,boolean)
-    //since v. 0.1-alpha.Also no more need to call 
-    //weigthBlobs before it;
-    bd.findCentroids();
-    //The parameter is used to print or not a message
-    //when no blobs are found.
-    bd.weightBlobs(true);    
-    
-    
+    // scan for blobs
+    bd.imageFindBlobs(img);  // find the blobs
+    bd.loadBlobsFeatures();  // get blob features
+    bd.findCentroids();  // get center of blobs
+    bd.weightBlobs(true);  /// get size of blobs
+
+    // calculate average head motion
     int numBlobs = bd.getBlobsNumber();
-    int k = 8;
-    float bx = 0;
-    float by = 0;
-    float weightMax = 0;
-    int numWeightMax = -1;
-    float distMin = displayWidth;
-    int numDistMin = -1;
+    float prevtau = 1.0/frameCount;
+    prevx = prevtau*prevx + (1.0-prevtau)*avgx;
+    prevy = prevtau*prevy + (1.0-prevtau)*avgy;
+    prevx = 0;
+    prevy = 0;
+    float x = 0;
+    float y = 0;
+    int k = height/32;
     for (int i=0; i<numBlobs; ++i)
     {
       float bdx = bd.getCentroidX(i);
       float bdy = bd.getCentroidY(i);
-      float dx = bdx - width/2;
-      float dy = bdy - height/2;
-      float dist = sqrt(dx*dx + dy*dy);
-      if (dist <= distMin)
-      {
-        numDistMin = i;
-        distMin = dist;
-      }
-      
-      float weight = bd.getBlobWeight(i);
-      if (weight > weightMax)
-      {
-        numWeightMax = i;
-        weightMax = weight;
-      }
-    }
-    
-    if (numDistMin >= 0)
-    {
+      float dx = (bdx - width/2);
+      float dy = (bdy - height/2);
+      x += dx;
+      y += dy;
+      // plot blob centroids    
       fill(0, 255, 0);
-      for (int i=0; i<numBlobs; ++i)
-        ellipse(bd.getCentroidX(i), bd.getCentroidY(i), k, k);
+      ellipse(width-1 - bd.getCentroidX(i), bd.getCentroidY(i), k, k);
+    } 
+    x /= numBlobs;
+    y /= numBlobs;
+    float tau = 0.0;
+    avgx = tau*avgx + (1.0-tau)*x;
+    avgy = tau*avgy + (1.0-tau)*y;
 
-      float tau  = 0.5;
-      float tauAvg = 0.9;
-      blob.x = tau*blob.x + (1-tau)*bd.getCentroidX(numDistMin);
-      blob.y = tau*blob.y + (1-tau)*bd.getCentroidY(numDistMin);
-      blobAvg.x = tauAvg*blobAvg.x + (1-tauAvg)*blob.x;
-      blobAvg.y = tauAvg*blobAvg.y + (1-tauAvg)*blob.y;
-  
-      fill(0, 255, 255);
-      ellipse(blob.x, blob.y, 2*k, 2*k);
-  
-      float wx = 0.9*float(width)/float(displayWidth);
-      float wy = 0.9*float(height)/float(displayHeight);
-      fill(255, 255, 0);
-      ellipse(width*0.05 + wx*mousePos.x, height*0.05 + wy*mousePos.y, 2*k, 2*k);
-  
-      fill(255, 0, 255);
-      rect(blobAvg.x - k, blobAvg.y - k, 2*k, 2*k);
-
-      fill(255, 0, 255);
-      textAlign(CENTER, BOTTOM);
-      text("purpleClicks = " + str(purpleClicks), width/2, height);
-    }
+    // plot dots
+    //
+    // plot long running average
+    fill(255, 0, 255);
+    ellipse(width/2 - prevx, height/2 + prevy, 2*k, 2*k);
+    //
+    // plot short running average
+    fill(0, 255, 255);
+    ellipse(width/2 - avgx, height/2 + avgy, 2*k, 2*k);
+    //
+    // plot mouse indicator in yellow
+    float wx = float(width)/float(displayWidth);
+    float wy = float(height)/float(displayHeight);
+    fill(255, 255, 0);
+    ellipse(wx*mousePos.x, wy*mousePos.y, 2*k, 2*k);
   }
   
   // adjust mouse position
-  mousePos.x -= mouseRate * gyro.y - (blob.x - blobAvg.x) * 2;
-  mousePos.y -= mouseRate * gyro.x - (blob.y - blobAvg.y) * 8;
+  float threshold = 1;
+  float s = displayWidth/64;
+  mousePos.x -= mouseRate * gyro.y + ( (avgx-prevx) ) * q / responseTime / frameRate;
+  mousePos.y -= mouseRate * gyro.x - ( (avgy-prevy) ) * q / responseTime / frameRate;
   if (mousePos.x < 0) mousePos.x = 0;
   if (mousePos.x >= (displayWidth - 1) ) mousePos.x = displayWidth - 1;
   if (mousePos.y < 0) mousePos.y = 0;
@@ -221,10 +203,9 @@ void draw()
 
 
 
-void mouseClicked()
+float sigmoid(float x)
 {
-  if (get(mouseX, mouseY) == color(255, 0, 255) )
-    ++purpleClicks;
+  return 2.0/(1.0 + exp(-x)) - 1;
 }
 
 
